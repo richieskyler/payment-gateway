@@ -1,7 +1,7 @@
 const { capture, refund, getCaptured, getRefunded } = require("../bank");
 const pool = require("../db/pool")
 
-
+///Reconcilation
 async function reconcileSinglePayment(client, payment) {
     try {
         let bankResult;
