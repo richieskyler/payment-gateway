@@ -19,4 +19,13 @@ async function capture(req, res, next){
     }
 }
 
-module.exports = { authorize, capture };
+async function voidPayment(req, res, next) {
+    try {
+        const result = await paymentService.voidPayment(req.body, req.headers["idempotency-key"])
+        return res.json(result)
+    } catch (err) {
+        next(err)
+    }    
+}
+
+module.exports = { authorize, capture, voidPayment };

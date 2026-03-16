@@ -60,4 +60,36 @@ async function createCapturedPayment(client,paymentId, bankResult, idempotencyKe
 
 }
 
-module.exports = { createAuthorizedPayment, createCapturedPayment };
+async function createVoidedPayment(client, paymentId, bankResult, idempotencyKey) {
+    const result = await client.query(
+            `SELECT * FROM payments
+             WHERE id = $1
+             FOR UPDATE`,
+            [paymentId]
+        );
+
+    const paymentToBeUpdated = result.rows[0];
+
+    if (paymentToBeUpdated.status !== "PENDING" && paymentToBeUpdated.type !== "VOID") {
+        error =  new Error(`ALREADY_PROCESSED: ${paymentToBeUpdated.status}`)
+        error.status = 409;
+         throw error
+    }
+
+    //Updating Database after succeessful void from the bank API
+    const paymentUpdated = await client.query(
+        `UPDATE payments 
+            SET status = 'VOIDED',
+            type = 'VOID',
+            void_id = $1,
+            voided_at = $2
+        WHERE id = $3
+        RETURNING *`,
+        [bankResult.void_id, bankResult.voided_at, paymentId]
+    )
+
+    return paymentUpdated.rows[0];
+
+}
+
+module.exports = { createAuthorizedPayment, createCapturedPayment, createVoidedPayment };

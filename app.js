@@ -20,6 +20,10 @@ app.post("/payments/capture",
   paymentController.capture
 )
 
+app.post("/payments/void",
+  idempotencyMiddleware,
+  paymentController.voidPayment
+)
 //module.exports = app;
 
 startReconciliationScheduler();

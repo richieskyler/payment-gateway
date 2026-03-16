@@ -149,4 +149,80 @@ async function capture(body, idempotencyKey) {
     })
 }
 
-module.exports = { authorize, capture };
+async function voidPayment(body,idempotencyKey) {
+    const paymentId = body.id;
+    if (!paymentId) {
+        const error = new Error("PaymentId does not exist in the request body");
+        error.status = 400;
+        throw error;
+    }
+    
+    let payment;
+    await withTransaction(async (client) => {
+        const result = await client.query(
+            `SELECT * FROM payments where id = $1
+            FOR UPDATE`,
+            [paymentId]
+        )
+
+        if (result.rowCount === 0) {
+            error = new Error("Payment not found")
+            error.status = 404;
+            throw error
+        }
+
+        payment = result.rows[0];
+        if (payment.status !== "AUTHORIZED") {
+            error = new Error(`Invalid State: ${payment.status}`)
+            error.status = 409;
+            throw error
+        }
+
+        await client.query(
+            `UPDATE payments 
+            SET status = 'PENDING',
+            type = 'VOID'
+            WHERE id = $1
+            RETURNING *`,
+            [paymentId]
+        );
+
+    })
+
+    let bankResult;
+    try {
+        bankResult = await bankClient.voidAuth({
+            authorization_id : payment.authorization_id,
+            idempotencyKey
+        });
+
+    } catch (err) {
+        console.error({
+            paymentId,
+            idempotencyKey,
+            status: err.response?.status,
+            data: err.response?.data
+        })
+
+        errorMessage = err.response?.data?.error
+        error = new Error(`BANK_VOID_FAILED: ${errorMessage}`)
+        error.status = 502;
+        error.code = err.response?.data?.error || "BANK_VOID_FAILED"
+        throw error
+    }
+
+    return await withTransaction(async (client) => {
+        const payment = await paymentRepository.createVoidedPayment(
+            client,
+            paymentId,
+            bankResult,
+            idempotencyKey
+        )
+
+        const response = {payment}
+        await idempotencyRepository.save(client,response,idempotencyKey)
+        return response
+    })
+}
+
+module.exports = { authorize, capture, voidPayment};
