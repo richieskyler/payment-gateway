@@ -61,6 +61,15 @@ async function createCapturedPayment(client,paymentId, bankResult, idempotencyKe
 }
 
 async function createVoidedPayment(client, paymentId, bankResult, idempotencyKey) {
+    await client.query(
+        `UPDATE payment_attempts
+            SET status = 'SUCCESS',
+            bank_response = $1
+        WHERE payment_id = $2
+            AND idempotency_key = $3`,
+        [JSON.stringify(bankResult), paymentId, idempotencyKey]
+    );
+
     const result = await client.query(
             `SELECT * FROM payments
              WHERE id = $1
@@ -92,4 +101,44 @@ async function createVoidedPayment(client, paymentId, bankResult, idempotencyKey
 
 }
 
-module.exports = { createAuthorizedPayment, createCapturedPayment, createVoidedPayment };
+async function createRefundedPayment(client, paymentId, bankResult, idempotencyKey) {
+    await client.query(
+        `UPDATE payment_attempts
+            SET status = 'SUCCESS',
+            bank_response = $1
+        WHERE payment_id = $2
+            AND idempotency_key = $3`,
+        [JSON.stringify(bankResult), paymentId, idempotencyKey]
+    );
+
+    const result = await client.query(
+        `SELECT * FROM payments 
+         WHERE  id = $1
+         FOR UPDATE`,
+        [paymentId]
+    )
+
+    const paymentToBeUpdated =  result.rows[0];
+
+    if (paymentToBeUpdated.status !== "PENDING" && paymentToBeUpdated.type !== "REFUND") {
+        error = new Error("ALREADY_PROCESSED")
+        error.status = 404;
+        error.paymentStatus = paymentToBeUpdated.status
+        throw error
+    }
+
+    const paymentUpdated = await client.query(
+        `UPDATE payments
+          set status = 'REFUNDED',
+          type = 'REFUND',
+          refund_id = $1,
+          refunded_at = $2
+          WHERE id = $3
+         RETURNING *`,
+        [bankResult.refund_id, bankResult.refunded_at, paymentId]
+    )
+
+    return paymentUpdated.rows[0];
+}
+
+module.exports = { createAuthorizedPayment, createCapturedPayment, createVoidedPayment, createRefundedPayment };

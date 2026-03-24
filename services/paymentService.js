@@ -92,7 +92,7 @@ async function capture(body, idempotencyKey) {
             const attemptResult = await client.query(
                 `INSERT INTO payment_attempts 
                     (payment_id, status, idempotency_key) 
-                VALUES ($1, 'INITIATED', $2)
+                VALUES ($1, 'CAPTURING', $2)
                 RETURNING *`,
                 [paymentId, idempotencyKey]
             );
@@ -178,14 +178,27 @@ async function voidPayment(body,idempotencyKey) {
             throw error
         }
 
-        await client.query(
-            `UPDATE payments 
-            SET status = 'PENDING',
-            type = 'VOID'
-            WHERE id = $1
-            RETURNING *`,
-            [paymentId]
-        );
+        //Capture attempt incase of failure
+        if (payment.status === "CAPTURED") {
+            const attemptResult = await client.query(
+                `UPDATE payment_attempts
+                    SET status = 'VOIDING'
+                 WHERE payment_id = $1 AND idempotency_key = $2
+                RETURNING *`,
+                [paymentId, idempotencyKey]
+            );
+
+            const refundAttempt = attemptResult.rows[0];
+
+            await client.query(
+                `UPDATE payments 
+                SET status = 'PENDING',
+                type = 'VOID'
+                WHERE id = $1
+                RETURNING *`,
+                [paymentId]
+            );
+        }
 
     })
 
@@ -205,7 +218,7 @@ async function voidPayment(body,idempotencyKey) {
         })
 
         errorMessage = err.response?.data?.error
-        error = new Error(`BANK_VOID_FAILED: ${errorMessage}`)
+        error = new Error(`Bank Service Unavailable: ${errorMessage}`)
         error.status = 502;
         error.code = err.response?.data?.error || "BANK_VOID_FAILED"
         throw error
@@ -225,4 +238,100 @@ async function voidPayment(body,idempotencyKey) {
     })
 }
 
-module.exports = { authorize, capture, voidPayment};
+async function refund(body, idempotencyKey) {
+    const paymentId = body.id
+    if (!paymentId) {
+        const error = new Error("PaymentId does not exist in the request body");
+        error.status = 400;
+        throw error;
+    }
+
+    let payment;
+    await withTransaction(async (client) => {
+        const result = await client.query(
+            `SELECT * FROM payments
+             WHERE id = $1
+             FOR UPDATE`,
+            [paymentId]
+        )
+
+        if (result.rowCount === 0) {
+            error = new Error("Payment doesn't exist ")
+            error.status = 404;
+            throw error
+        }
+
+        payment = result.rows[0];
+        const validStatuses = ["CAPTURED","PENDING"]
+
+            
+        if (!validStatuses.includes(payment.status)) {
+            error = new Error("INVALID STATE")
+            error.status = 404;
+            error.paymentStatus = payment.status;
+            throw error
+        }
+
+        //Capture attempt incase of failure
+        if (payment.status === "CAPTURED") {
+            const attemptResult = await client.query(
+                `UPDATE payment_attempts
+                    SET status = 'REFUNDING'
+                 WHERE payment_id = $1 AND idempotency_key = $2
+                RETURNING *`,
+                [paymentId, idempotencyKey]
+            );
+
+        const refundAttempt = attemptResult.rows[0];
+
+            //Pending Added
+            await client.query(
+                `UPDATE payments 
+                SET status = 'PENDING',
+                type = 'REFUND'
+                WHERE id = $1
+                RETURNING *`,
+                [paymentId]
+            );
+        }
+    })
+
+    //Call external bank API
+    let bankResult
+
+    try {
+        bankResult = await bankClient.refund({
+            capture_id: payment.capture_id,
+            amount_cents: payment.amount_cents,
+            idempotencyKey
+        });
+
+    } catch (err){
+        console.error({
+            status: err.response?.status,
+            data: err.response?.data
+        })
+
+        errorMessage = err.response?.data?.message
+        error = new Error(`BANK_REFUND_FAILED: ${errorMessage}`)
+        error.status = 502;
+        error.code = err.response?.data?.error || "Bank Service Unavailable"
+        throw error
+    }
+
+    return await withTransaction(async (client) => {
+        const payment = await paymentRepository.createRefundedPayment(
+            client,
+            paymentId,
+            bankResult,
+            idempotencyKey
+        )
+
+        const response = {payment}
+        await idempotencyRepository.save(client,response,idempotencyKey)
+        return response
+    })
+
+}
+
+module.exports = { authorize, capture, voidPayment, refund};

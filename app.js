@@ -24,6 +24,14 @@ app.post("/payments/void",
   idempotencyMiddleware,
   paymentController.voidPayment
 )
+
+app.post("/payments/refund",
+  idempotencyMiddleware,
+  paymentController.refund
+)
+
+
+
 //module.exports = app;
 
 startReconciliationScheduler();

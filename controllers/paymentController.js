@@ -28,4 +28,13 @@ async function voidPayment(req, res, next) {
     }    
 }
 
-module.exports = { authorize, capture, voidPayment };
+async function refund(req, res, next) {
+    try {
+        const result = await paymentService.refund(req.body, req.headers["idempotency-key"])
+        return res.json(result)
+    } catch (err) {
+        next(err)
+    }    
+}
+
+module.exports = { authorize, capture, voidPayment, refund };
