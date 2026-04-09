@@ -31,10 +31,9 @@ app.post("/payments/refund",
 )
 
 
-
 //module.exports = app;
 
-startReconciliationScheduler();
+//startReconciliationScheduler();
 
 app.listen(3000, () => {
   console.log("Server running on port 3000");

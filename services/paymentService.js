@@ -3,7 +3,7 @@ const { withTransaction } = require("../utils/transaction");
 const bankClient = require("../bank");  
 const idempotencyRepository = require("../repositories/idempotencyRepository");
 
-async function authorize(body, idempotencyKey) {
+async function authorize(body, idempotencyKey, requestHash) {
     let bankResult
     try {
         bankResult = await bankClient.authorize(
@@ -47,7 +47,7 @@ async function authorize(body, idempotencyKey) {
         );
         const response = {payment};
 
-        await idempotencyRepository.save(client, response, idempotencyKey);
+        await idempotencyRepository.save(client, response, idempotencyKey, requestHash);
         return response;
     })
 
