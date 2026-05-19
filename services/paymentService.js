@@ -2,10 +2,19 @@ const paymentRepository = require("../repositories/paymentRepository");
 const { withTransaction } = require("../utils/transaction");
 const bankClient = require("../bank");  
 const idempotencyRepository = require("../repositories/idempotencyRepository");
+const { logger } = require("../utils/logger");
 
-async function authorize(body, idempotencyKey, requestHash) {
+async function authorize(body, idempotencyKey, requestHash, correlationId) {
     let bankResult
     try {
+        //Logging payment authorization process: Calling Bank Authorization API
+        logger.info({
+            correlationId: req.correlationId,
+            //paymentId: result?.payment.id,
+            operation: "AUTHORIZE",
+            message: "Calling bank authorize API"
+        });
+
         bankResult = await bankClient.authorize(
             {
                 amount_cents : body.amount_cents,
@@ -19,10 +28,20 @@ async function authorize(body, idempotencyKey, requestHash) {
             }
         )
     } catch (err) {
-        console.error("Bank Authorize error",{
+        // console.error("Bank Authorize error",{
+        //     idempotencyKey,
+        //     status: err.response?.status,
+        //     error: err.response?.data
+        // })
+
+        //Logging payment authorization process: Bank Authorization failed
+        logger.error({
+            correlationId,
             idempotencyKey,
+            operation: "AUTHORIZE",
             status: err.response?.status,
-            error: err.response?.data
+            error: err.response?.data,
+            message: "Bank Authorize failed"
         })
 
         //Throwing error
@@ -32,28 +51,44 @@ async function authorize(body, idempotencyKey, requestHash) {
         throw error
     }
 
+    let response
+
+    //DECLINED
     if (bankResult.status !== "approved") {
-        return {
+        response = {
+            paymentStatus : "declined",
             error: bankResult.error,
             reason: bankResult.message
-        };
-    }
+        }
 
-    return await withTransaction(async (client) => {
+        //Logging payment authorization process: Payment status declined
+        logger.error({
+            correlationId,
+            idempotencyKey,
+            operation: "AUTHORIZE",
+            status: err.response?.status,
+            error: err.response?.data,
+            message: "Payment authorization status failed"
+        })
+    } else {
+
+        //APPROVED
+        return await withTransaction(async (client) => {
         const payment = await paymentRepository.createAuthorizedPayment(
             client,
             body,
             bankResult
         );
-        const response = {payment};
-
+        response = {payment}; 
         await idempotencyRepository.save(client, response, idempotencyKey, requestHash);
         return response;
     })
-
+}
+   
+    return response;
 }
 
-async function capture(body, idempotencyKey) {
+async function capture(body, idempotencyKey, correlationId) {
     const paymentId = body.id;
     if (!paymentId) {
         const error = new Error("PaymentId does not exist in the request body");
@@ -113,6 +148,14 @@ async function capture(body, idempotencyKey) {
     
     let bankResult;
 
+    //Logging payment capture process: Calling Bank CApture API
+        logger.info({
+            correlationId,
+            //paymentId: result?.payment.id,
+            operation: "CAPTURE",
+            message: "Calling bank capture API"
+        });
+
     try {
         bankResult = await bankClient.capture({
             authorization_id: payment.authorization_id,
@@ -120,12 +163,21 @@ async function capture(body, idempotencyKey) {
             idempotencyKey
         });
     } catch (err) {
-        console.error("Bank capture error:", {
-            paymentId,
-            idempotencyKey,
+        // console.error("Bank capture error:", {
+        //     paymentId,
+        //     idempotencyKey,
+        //     status: err.response?.status,
+        //     data: err.response?.data
+        // });
+
+        //Logging payment capture process: Bank capture failed
+        logger.error({
+            correlationId: req.correlationId,
+            operation: "CAPTURE",
             status: err.response?.status,
-            data: err.response?.data
-        });
+            error: err.response?.data,
+            message: "Bank capture failed"
+        })
         
         const errorMessage = err.response?.data?.message || "Bank service unavailable"
         const error = new Error(`BANK_CAPTURED_FAILED: ${errorMessage}`)
@@ -215,6 +267,14 @@ async function voidPayment(body,idempotencyKey) {
             idempotencyKey,
             status: err.response?.status,
             data: err.response?.data
+        })
+
+        logger.error({
+            correlationId: req.correlationId,
+            operation: "VOIF",
+            status: err.response?.status,
+            error: err.response?.data,
+            message: "Bank Void failed"
         })
 
         errorMessage = err.response?.data?.error
@@ -310,6 +370,14 @@ async function refund(body, idempotencyKey) {
         console.error({
             status: err.response?.status,
             data: err.response?.data
+        })
+
+        logger.error({
+            correlationId: req.correlationId,
+            operation: "REFUND",
+            status: err.response?.status,
+            error: err.response?.data,
+            message: "Bank refund failed"
         })
 
         errorMessage = err.response?.data?.message

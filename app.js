@@ -4,11 +4,13 @@ const pool = require("./db/pool")
 const paymentController = require("./controllers/paymentController");
 const { idempotencyMiddleware } = require("./middleware/idempotencyMiddleware");
 const { startReconciliationScheduler } =  require("./reconcile/scheduler");
+const { requestLogger } = require("./middleware/requestLogger");
 
 
 
 const app = express();
 app.use(express.json());
+app.use(requestLogger);
 
 app.post("/payments/authorize",
     idempotencyMiddleware,
