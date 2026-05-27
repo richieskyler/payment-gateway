@@ -458,7 +458,7 @@ router.post("/payments/void", async (req, res) =>{
             `SELECT * FROM payments
              WHERE id = $1
              FOR UPDATE`,
-             [paymentId]
+            [paymentId]
         );
 
         const paymentToBeUpdated = result.rows[0];
@@ -621,10 +621,10 @@ router.post("/payments/refund", async (req, res) =>{
 
         //After successful bank call update payment_attempt
         await client1.query(
-            `UPDATE payment_attempt
+            `UPDATE payment_attempts
             SET status = 'SUCCESS',
             bank_response=$1
-            WHERE id=$2`,
+            WHERE payment_id=$2`,
             [JSON.stringify(bankResult), refundAttempt.payment_id]
         )
         
