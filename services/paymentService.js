@@ -9,7 +9,7 @@ async function authorize(body, idempotencyKey, requestHash, correlationId) {
     try {
         //Logging payment authorization process: Calling Bank Authorization API
         logger.info({
-            correlationId: req.correlationId,
+            correlationId,
             //paymentId: result?.payment.id,
             operation: "AUTHORIZE",
             message: "Calling bank authorize API"
@@ -66,8 +66,8 @@ async function authorize(body, idempotencyKey, requestHash, correlationId) {
             correlationId,
             idempotencyKey,
             operation: "AUTHORIZE",
-            status: err.response?.status,
-            error: err.response?.data,
+            bankStatus: bankResult.status,
+            bankError: bankResult.error,
             message: "Payment authorization status failed"
         })
     } else {
@@ -172,7 +172,7 @@ async function capture(body, idempotencyKey, correlationId) {
 
         //Logging payment capture process: Bank capture failed
         logger.error({
-            correlationId: req.correlationId,
+            correlationId,
             operation: "CAPTURE",
             status: err.response?.status,
             error: err.response?.data,
@@ -201,7 +201,7 @@ async function capture(body, idempotencyKey, correlationId) {
     })
 }
 
-async function voidPayment(body,idempotencyKey) {
+async function voidPayment(body,idempotencyKey, correlationId) {
     const paymentId = body.id;
     if (!paymentId) {
         const error = new Error("PaymentId does not exist in the request body");
@@ -255,6 +255,15 @@ async function voidPayment(body,idempotencyKey) {
     })
 
     let bankResult;
+
+    //Logging payment void process: Calling Bank Void API
+        logger.info({
+            correlationId,
+            //paymentId: result?.payment.id,
+            operation: "VOID",
+            message: "Calling bank void API"
+        });
+
     try {
         bankResult = await bankClient.voidAuth({
             authorization_id : payment.authorization_id,
@@ -262,12 +271,12 @@ async function voidPayment(body,idempotencyKey) {
         });
 
     } catch (err) {
-        console.error({
-            paymentId,
-            idempotencyKey,
-            status: err.response?.status,
-            data: err.response?.data
-        })
+        // console.error({
+        //     paymentId,
+        //     idempotencyKey,
+        //     status: err.response?.status,
+        //     data: err.response?.data
+        // })
 
         logger.error({
             correlationId: req.correlationId,
@@ -298,7 +307,7 @@ async function voidPayment(body,idempotencyKey) {
     })
 }
 
-async function refund(body, idempotencyKey) {
+async function refund(body, idempotencyKey,correlationId) {
     const paymentId = body.id
     if (!paymentId) {
         const error = new Error("PaymentId does not exist in the request body");
@@ -359,6 +368,15 @@ async function refund(body, idempotencyKey) {
     //Call external bank API
     let bankResult
 
+    //Logging payment refund process: Calling Bank refund API
+        logger.info({
+            correlationId,
+            //paymentId: result?.payment.id,
+            operation: "refund",
+            message: "Calling bank refund API"
+        });
+
+
     try {
         bankResult = await bankClient.refund({
             capture_id: payment.capture_id,
@@ -367,10 +385,10 @@ async function refund(body, idempotencyKey) {
         });
 
     } catch (err){
-        console.error({
-            status: err.response?.status,
-            data: err.response?.data
-        })
+        // console.error({
+        //     status: err.response?.status,
+        //     data: err.response?.data
+        // })
 
         logger.error({
             correlationId: req.correlationId,

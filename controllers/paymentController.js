@@ -36,7 +36,7 @@ async function capture(req, res, next){
             correlationId: req.correlationId,
             //paymentId: result?.payment.id,
             operation: "CAPTURE",
-            message: "Starting payment capture"
+            message: "Starting payment capture "
         })
     try {
         const result = await paymentService.capture(req.body, req.headers["idempotency-key"], req.correlationId)
@@ -58,13 +58,20 @@ async function capture(req, res, next){
 
 async function voidPayment(req, res, next) {
     try {
+        //Logging payment void process: Starting payment void
+        logger.info({
+            correlationId: req.correlationId,
+            //paymentId: result?.payment.id,
+            operation: "VOID",
+            message: "Starting payment void"
+        })
         const result = await paymentService.voidPayment(req.body, req.headers["idempotency-key"])
 
         logger.info({
             correlationId: req.correlationId,
             paymentId: result?.paymentId,
             operation: "VOID",
-            message: "Calling bank void API"
+            message: "Payment void successful"
         });
 
         return res.json(result)
@@ -76,13 +83,20 @@ async function voidPayment(req, res, next) {
 
 async function refund(req, res, next) {
     try {
+        //Logging payment void process: Starting payment void
+        logger.info({
+            correlationId: req.correlationId,
+            //paymentId: result?.payment.id,
+            operation: "VOID",
+            message: "Starting payment refund"
+        })
         const result = await paymentService.refund(req.body, req.headers["idempotency-key"])
 
          logger.info({
             correlationId: req.correlationId,
             paymentId: result?.paymentId,
             operation: "REFUND",
-            message: "Calling bank refund API"
+            message: "Payment refund successful"
         });
         
         return res.json(result)

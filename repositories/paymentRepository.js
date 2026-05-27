@@ -45,6 +45,7 @@ async function createCapturedPayment(client,paymentId, bankResult, idempotencyKe
         throw error
     }
 
+
     const paymentUpdated = await client.query(
         `UPDATE payments 
             SET status = 'CAPTURED',
