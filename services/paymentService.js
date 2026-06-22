@@ -39,15 +39,14 @@ async function authorize(body, idempotencyKey, requestHash, correlationId) {
             correlationId,
             idempotencyKey,
             operation: "AUTHORIZE",
-            status: err.response?.status,
-            error: err.response?.data,
-            message: "Bank Authorize failed"
+            error: err.response?.data?.error,
+            message: err.response?.data?.message
         })
 
         //Throwing error
         const error = new Error(err.response?.data?.message || "Bank service is unavailable");
         error.status = 502;
-        error.code = err.response?.data?.error || "Bank_Authorized_failed";
+        error.error = err.response?.data?.error;
         throw error
     }
 
@@ -68,11 +67,11 @@ async function authorize(body, idempotencyKey, requestHash, correlationId) {
             operation: "AUTHORIZE",
             bankStatus: bankResult.status,
             bankError: bankResult.error,
-            message: "Payment authorization status failed"
+            message: bankResult.message || "Payment authorization status failed"
         })
     } else {
 
-        //APPROVED
+        //Payment is being authorized
         return await withTransaction(async (client) => {
         const payment = await paymentRepository.createAuthorizedPayment(
             client,
@@ -80,6 +79,7 @@ async function authorize(body, idempotencyKey, requestHash, correlationId) {
             bankResult
         );
         response = {payment}; 
+        //Saving idempotency Details to avoid reuse
         await idempotencyRepository.save(client, response, idempotencyKey, requestHash);
         return response;
     })
@@ -99,50 +99,26 @@ async function capture(body, idempotencyKey, correlationId) {
     let payment;
     let captureAttempt;
     await withTransaction(async (client) => {
-        const result = await client.query(
-            `SELECT * FROM payments
-            WHERE id = $1
-            FOR UPDATE`,
-            [paymentId]
-        )
-
-        if (result.rowCount === 0) {
+        //Getting the payment details from the DB
+        payment = await paymentRepository.getPaymentForUpdate(client, paymentId);
+        
+        if (!payment) {
             const error = new Error("Payment not found");
             error.status = 404;
             throw error;
         }
 
-        payment = result.rows[0];
         const validStatuses = ["AUTHORIZED","PENDING"]
         if (!validStatuses.includes(payment.status)) {
-            const error = new Error("Invalid state ")
+            const error = new Error(`Invalid State: ${payment.status}`)
                 error.status = 409;
                 error.paymentStatus = payment.status;
                 throw error
         }
         
-
         //Capture attempt incase of failure
         if (payment.status === "AUTHORIZED") {
-            const attemptResult = await client.query(
-                `INSERT INTO payment_attempts 
-                    (payment_id, status, idempotency_key) 
-                VALUES ($1, 'CAPTURING', $2)
-                RETURNING *`,
-                [paymentId, idempotencyKey]
-            );
-
-            captureAttempt = attemptResult.rows[0];
-
-            //Pending Added
-            await client.query(
-                `UPDATE payments 
-                SET status = 'PENDING',
-                type = 'CAPTURE'
-                WHERE id = $1
-                RETURNING *`,
-                [paymentId]
-            );
+            await paymentRepository.startCapture(client,paymentId,idempotencyKey);
         }
     })
     
@@ -151,7 +127,6 @@ async function capture(body, idempotencyKey, correlationId) {
     //Logging payment capture process: Calling Bank CApture API
         logger.info({
             correlationId,
-            //paymentId: result?.payment.id,
             operation: "CAPTURE",
             message: "Calling bank capture API"
         });
@@ -174,19 +149,19 @@ async function capture(body, idempotencyKey, correlationId) {
         logger.error({
             correlationId,
             operation: "CAPTURE",
-            status: err.response?.status,
-            error: err.response?.data,
-            message: "Bank capture failed"
+            error: err.response?.data?.error,
+            message: err.response?.data?.message
         })
         
         const errorMessage = err.response?.data?.message || "Bank service unavailable"
         const error = new Error(`BANK_CAPTURED_FAILED: ${errorMessage}`)
         error.status = 502;
-        error.code = err.response?.data?.error || "BANK_CAPTURE_FAILED";
+        error.error = err.response?.data?.error || "BANK_CAPTURE_FAILED";
         throw error
 
     }
 
+    //Payment is being captured
     return await withTransaction ( async (client) => {
         const payment = await paymentRepository.createCapturedPayment(
             client,
@@ -196,6 +171,8 @@ async function capture(body, idempotencyKey, correlationId) {
         )
 
         const response = {payment}
+
+        //Saving Idempotency details to avoid reuse
         await idempotencyRepository.save(client,response,idempotencyKey)
         return response
     })
@@ -211,47 +188,23 @@ async function voidPayment(body,idempotencyKey, correlationId) {
     
     let payment;
     await withTransaction(async (client) => {
-        const result = await client.query(
-            `SELECT * FROM payments where id = $1
-            FOR UPDATE`,
-            [paymentId]
-        )
+        //Getting the payment details from the DB
+        payment = await paymentRepository.getPaymentForUpdate(client, paymentId)
 
-        if (result.rowCount === 0) {
+        if (!payment) {
             error = new Error("Payment not found")
             error.status = 404;
             throw error
         }
 
-        payment = result.rows[0];
         if (payment.status !== "AUTHORIZED") {
             error = new Error(`Invalid State: ${payment.status}`)
             error.status = 409;
             throw error
         }
 
-        //Capture attempt incase of failure
-        if (payment.status === "CAPTURED") {
-            const attemptResult = await client.query(
-                `UPDATE payment_attempts
-                    SET status = 'VOIDING'
-                 WHERE payment_id = $1 AND idempotency_key = $2
-                RETURNING *`,
-                [paymentId, idempotencyKey]
-            );
-
-            const refundAttempt = attemptResult.rows[0];
-
-            await client.query(
-                `UPDATE payments 
-                SET status = 'PENDING',
-                type = 'VOID'
-                WHERE id = $1
-                RETURNING *`,
-                [paymentId]
-            );
-        }
-
+        //Capture attempt incase of failure 
+        await paymentRepository.startVoid(client, paymentId, idempotencyKey)
     })
 
     let bankResult;
@@ -279,20 +232,20 @@ async function voidPayment(body,idempotencyKey, correlationId) {
         // })
 
         logger.error({
-            correlationId: req.correlationId,
-            operation: "VOIF",
-            status: err.response?.status,
-            error: err.response?.data,
-            message: "Bank Void failed"
+            correlationId: correlationId,
+            operation: "VOID",
+            error: err.response?.data?.error,
+            message: err.response?.data?.message
         })
 
-        errorMessage = err.response?.data?.error
+        errorMessage = err.response?.data?.message
         error = new Error(`Bank Service Unavailable: ${errorMessage}`)
         error.status = 502;
-        error.code = err.response?.data?.error || "BANK_VOID_FAILED"
+        error.error = err.response?.data?.error || "BANK_VOID_FAILED"
         throw error
     }
 
+    //Payment is being voided
     return await withTransaction(async (client) => {
         const payment = await paymentRepository.createVoidedPayment(
             client,
@@ -302,6 +255,7 @@ async function voidPayment(body,idempotencyKey, correlationId) {
         )
 
         const response = {payment}
+        //Saving idempotency details to avoid reuse
         await idempotencyRepository.save(client,response,idempotencyKey)
         return response
     })
@@ -317,23 +271,15 @@ async function refund(body, idempotencyKey,correlationId) {
 
     let payment;
     await withTransaction(async (client) => {
-        const result = await client.query(
-            `SELECT * FROM payments
-             WHERE id = $1
-             FOR UPDATE`,
-            [paymentId]
-        )
+        payment = await paymentRepository.getPaymentForUpdate(client, paymentId)
 
-        if (result.rowCount === 0) {
+        if (!payment) {
             error = new Error("Payment doesn't exist ")
             error.status = 404;
             throw error
         }
 
-        payment = result.rows[0];
         const validStatuses = ["CAPTURED","PENDING"]
-
-            
         if (!validStatuses.includes(payment.status)) {
             error = new Error("INVALID STATE")
             error.status = 404;
@@ -343,25 +289,7 @@ async function refund(body, idempotencyKey,correlationId) {
 
         //Capture attempt incase of failure
         if (payment.status === "CAPTURED") {
-            const attemptResult = await client.query(
-                `UPDATE payment_attempts
-                    SET status = 'REFUNDING'
-                 WHERE payment_id = $1 AND idempotency_key = $2
-                RETURNING *`,
-                [paymentId, idempotencyKey]
-            );
-
-        const refundAttempt = attemptResult.rows[0];
-
-            //Pending Added
-            await client.query(
-                `UPDATE payments 
-                SET status = 'PENDING',
-                type = 'REFUND'
-                WHERE id = $1
-                RETURNING *`,
-                [paymentId]
-            );
+            await paymentRepository.startRefund(client,paymentId,idempotencyKey)
         }
     })
 
@@ -393,18 +321,18 @@ async function refund(body, idempotencyKey,correlationId) {
         logger.error({
             correlationId: req.correlationId,
             operation: "REFUND",
-            status: err.response?.status,
-            error: err.response?.data,
-            message: "Bank refund failed"
+            error: err.response?.data?.error,
+            message: err.response?.data?.message
         })
 
         errorMessage = err.response?.data?.message
         error = new Error(`BANK_REFUND_FAILED: ${errorMessage}`)
         error.status = 502;
-        error.code = err.response?.data?.error || "Bank Service Unavailable"
+        error.error = err.response?.data?.error || "Bank Service Unavailable"
         throw error
     }
 
+    //Payment being refunded
     return await withTransaction(async (client) => {
         const payment = await paymentRepository.createRefundedPayment(
             client,
@@ -414,6 +342,7 @@ async function refund(body, idempotencyKey,correlationId) {
         )
 
         const response = {payment}
+        //Saving idempotency details to avoid reuse
         await idempotencyRepository.save(client,response,idempotencyKey)
         return response
     })
